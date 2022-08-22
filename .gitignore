@@ -15,5 +15,5 @@
 # vendor/
 
 logdriver
-logdriver_linux_arm64
-logdriver_linux_amd64
+grpc_logdriver_linux_arm64
+grpc_logdriver_linux_amd64
