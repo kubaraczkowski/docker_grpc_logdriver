@@ -1,0 +1,41 @@
+syntax = "proto3";
+import "google/protobuf/empty.proto";
+option go_package = "github.com/kubaraczkowski/docker_grpc_logdriver/internal/driver";
+
+package logdriver;
+
+service IDockerLogDriver {
+    rpc GetLogs (LogOptions) returns (stream LogMessage);
+    rpc ListServices (google.protobuf.Empty) returns (ServicesList);
+}
+
+message LogOptions {
+}
+
+message LogMessage {
+    string service = 1;
+    LogEntry entry = 2;
+}
+
+message ServicesList {
+    repeated string service = 1;
+}
+
+
+//////////////////////////////////////
+/// FROM https://github.com/moby/moby/blob/master/api/types/plugins/logdriver/entry.proto
+//////////////////////////////////////
+
+message LogEntry {
+	string source = 1;
+	int64 time_nano = 2;
+	bytes line = 3;
+	bool partial = 4;
+	PartialLogEntryMetadata partial_log_metadata = 5;
+}
+
+message PartialLogEntryMetadata {
+	bool last = 1;
+	string id = 2;
+	int32 ordinal = 3;
+}
