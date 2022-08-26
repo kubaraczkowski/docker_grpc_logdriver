@@ -16,11 +16,11 @@ import (
 	protoio "github.com/gogo/protobuf/io"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
 	grpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/reflection"
 	status "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -49,6 +49,7 @@ type fanout struct {
 var clientfanout fanout
 
 func NewDriver() *driver {
+	log.Print("NewDriver")
 	return &driver{
 		logs:   make(map[string]*logPair),
 		idx:    make(map[string]*logPair),
@@ -58,6 +59,7 @@ func NewDriver() *driver {
 }
 
 func (d *driver) StartLogging(file string, logCtx logger.Info) error {
+	log.Print("StarLogging")
 	d.mu.Lock()
 	if _, exists := d.logs[file]; exists {
 		d.mu.Unlock()
@@ -65,7 +67,6 @@ func (d *driver) StartLogging(file string, logCtx logger.Info) error {
 	}
 	d.mu.Unlock()
 
-	logrus.WithField("id", logCtx.ContainerID).WithField("file", file).WithField("logpath", logCtx.LogPath).Debugf("Start logging")
 	f, err := fifo.OpenFifo(context.Background(), file, syscall.O_RDONLY, 0700)
 	if err != nil {
 		return errors.Wrapf(err, "error opening logger fifo: %q", file)
@@ -89,7 +90,7 @@ func (d *driver) StartLogging(file string, logCtx logger.Info) error {
 }
 
 func (d *driver) StopLogging(file string) error {
-	logrus.WithField("file", file).Debugf("Stop logging")
+	log.Print("StopLogging")
 	d.mu.Lock()
 	lf, ok := d.logs[file]
 	if ok {
@@ -110,7 +111,7 @@ func readLog(lf *logPair) {
 	for {
 		if err := dec.ReadMsg(&buf); err != nil {
 			if err == io.EOF {
-				logrus.WithField("id", lf.info.ContainerID).WithError(err).Debug("shutting down log logger")
+				log.Print("shutting down log logger")
 				lf.stream.Close()
 				return
 			}
@@ -144,7 +145,7 @@ func consumeLog(lf *logPair) {
 
 		select {
 		case lf.sendCh <- msg_proto:
-			logrus.WithField("id", lf.info.ContainerID).Debugf("Message sent")
+			log.Print("Message sent")
 		default:
 			// logrus.WithField("id", lf.info.ContainerID).Debugf("Message skipped")
 		}
@@ -171,26 +172,33 @@ func RunService(lis net.Listener, d *driver) {
 }
 
 func (d *driver) fanoutmessages() {
+	log.Print("Fanout start")
 	for {
-		msg := <-d.recvCh
+		msg, ok := <-d.recvCh
+		if !ok {
+			// channel closed
+			log.Print("Fanout stop")
+			return
+		}
 		clientfanout.mu.RLock()
 
 		for _, ch := range clientfanout.clientchannel {
-			pcopy := &LogMessage{
-				Service: msg.GetService(),
-				Entry: &LogEntry{
-					Source:   msg.GetEntry().GetSource(),
-					TimeNano: msg.GetEntry().GetTimeNano(),
-					Line:     msg.GetEntry().GetLine(),
-					Partial:  msg.GetEntry().GetPartial(),
-					PartialLogMetadata: &PartialLogEntryMetadata{
-						Last:    msg.GetEntry().GetPartialLogMetadata().GetLast(),
-						Id:      msg.GetEntry().GetPartialLogMetadata().GetId(),
-						Ordinal: msg.GetEntry().GetPartialLogMetadata().GetOrdinal(),
-					},
-				},
-			}
-			ch <- pcopy
+			pcopy := proto.Clone(msg)
+			// pcopy := &LogMessage{
+			// 	Service: msg.GetService(),
+			// 	Entry: &LogEntry{
+			// 		Source:   msg.GetEntry().GetSource(),
+			// 		TimeNano: msg.GetEntry().GetTimeNano(),
+			// 		Line:     msg.GetEntry().GetLine(),
+			// 		Partial:  msg.GetEntry().GetPartial(),
+			// 		PartialLogMetadata: &PartialLogEntryMetadata{
+			// 			Last:    msg.GetEntry().GetPartialLogMetadata().GetLast(),
+			// 			Id:      msg.GetEntry().GetPartialLogMetadata().GetId(),
+			// 			Ordinal: msg.GetEntry().GetPartialLogMetadata().GetOrdinal(),
+			// 		},
+			// 	},
+			// }
+			ch <- pcopy.(*LogMessage)
 		}
 		clientfanout.mu.RUnlock()
 	}
@@ -199,6 +207,7 @@ func (d *driver) fanoutmessages() {
 func (d *driver) GetLogs(options *LogOptions, srv IDockerLogDriver_GetLogsServer) error {
 	var msg *LogMessage
 	id := uuid.New()
+	log.Printf("New client: %v", id)
 
 	clientfanout.mu.Lock()
 	if _, ok := clientfanout.clientchannel[id]; ok {
@@ -214,6 +223,7 @@ LOOP:
 		case msg = <-mychannel:
 			srv.Send(msg)
 		case <-d.stopCh:
+			log.Print("StopCh received, closing client connections")
 			break LOOP
 		}
 	}

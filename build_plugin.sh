@@ -17,7 +17,7 @@ docker plugin rm kubaraczkowski/grpc_logdriver
 docker plugin create kubaraczkowski/grpc_logdriver .
 rm -rf rootfs
 # push
-docker plugin push kubaraczkowski/grpc_logdriver:${VERSION}
-docker plugin push kubaraczkowski/grpc_logdriver:latest
+docker plugin push --disable-content-trust kubaraczkowski/grpc_logdriver:${VERSION}
+docker plugin push --disable-content-trust kubaraczkowski/grpc_logdriver:latest
 # install
 docker plugin enable kubaraczkowski/grpc_logdriver
