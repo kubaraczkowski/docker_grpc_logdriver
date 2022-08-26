@@ -1,6 +1,6 @@
 export VERSION=$(cat version.txt)
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o grpc_logdriver_linux_arm64
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o grpc_logdriver_linux_amd64
+# CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o grpc_logdriver_linux_amd64
 
 # cleanup
 docker plugin disable -f kubaraczkowski/grpc_logdriver

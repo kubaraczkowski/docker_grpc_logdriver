@@ -49,7 +49,6 @@ type fanout struct {
 var clientfanout fanout
 
 func NewDriver() *driver {
-	log.Print("NewDriver")
 	return &driver{
 		logs:   make(map[string]*logPair),
 		idx:    make(map[string]*logPair),
@@ -59,7 +58,7 @@ func NewDriver() *driver {
 }
 
 func (d *driver) StartLogging(file string, logCtx logger.Info) error {
-	log.Print("StarLogging")
+	log.Printf("StarLogging container %s", logCtx.ContainerID)
 	d.mu.Lock()
 	if _, exists := d.logs[file]; exists {
 		d.mu.Unlock()
@@ -97,9 +96,6 @@ func (d *driver) StopLogging(file string) error {
 		lf.stream.Close()
 		delete(d.logs, file)
 	}
-	if len(d.logs) == 0 {
-		close(d.stopCh)
-	}
 	d.mu.Unlock()
 	return nil
 }
@@ -110,8 +106,11 @@ func readLog(lf *logPair) {
 	var buf logdriver.LogEntry
 	for {
 		if err := dec.ReadMsg(&buf); err != nil {
-			if err == io.EOF {
-				log.Print("shutting down log logger")
+			if err != nil {
+				if err == io.EOF {
+				} else {
+					log.Print(err.Error())
+				}
 				lf.stream.Close()
 				return
 			}
@@ -126,7 +125,10 @@ func consumeLog(lf *logPair) {
 
 	for {
 
-		buf := <-lf.msgCh
+		buf, ok := <-lf.msgCh
+		if !ok {
+			return
+		}
 
 		msg_proto := &LogMessage{
 			Service: lf.info.ContainerName,
@@ -145,7 +147,6 @@ func consumeLog(lf *logPair) {
 
 		select {
 		case lf.sendCh <- msg_proto:
-			log.Print("Message sent")
 		default:
 			// logrus.WithField("id", lf.info.ContainerID).Debugf("Message skipped")
 		}
@@ -162,6 +163,8 @@ func RunService(lis net.Listener, d *driver) {
 	}
 
 	clientfanout = fanout{mu: sync.RWMutex{}, clientchannel: make(map[uuid.UUID]chan *LogMessage)}
+	defer close(d.stopCh)
+	defer close(d.recvCh)
 
 	var opts []grpc.ServerOption
 	grpcServer := grpc.NewServer(opts...)
@@ -169,35 +172,20 @@ func RunService(lis net.Listener, d *driver) {
 	reflection.Register(grpcServer)
 	go d.fanoutmessages()
 	grpcServer.Serve(lis)
+
 }
 
 func (d *driver) fanoutmessages() {
-	log.Print("Fanout start")
 	for {
 		msg, ok := <-d.recvCh
 		if !ok {
 			// channel closed
-			log.Print("Fanout stop")
 			return
 		}
 		clientfanout.mu.RLock()
 
 		for _, ch := range clientfanout.clientchannel {
 			pcopy := proto.Clone(msg)
-			// pcopy := &LogMessage{
-			// 	Service: msg.GetService(),
-			// 	Entry: &LogEntry{
-			// 		Source:   msg.GetEntry().GetSource(),
-			// 		TimeNano: msg.GetEntry().GetTimeNano(),
-			// 		Line:     msg.GetEntry().GetLine(),
-			// 		Partial:  msg.GetEntry().GetPartial(),
-			// 		PartialLogMetadata: &PartialLogEntryMetadata{
-			// 			Last:    msg.GetEntry().GetPartialLogMetadata().GetLast(),
-			// 			Id:      msg.GetEntry().GetPartialLogMetadata().GetId(),
-			// 			Ordinal: msg.GetEntry().GetPartialLogMetadata().GetOrdinal(),
-			// 		},
-			// 	},
-			// }
 			ch <- pcopy.(*LogMessage)
 		}
 		clientfanout.mu.RUnlock()
@@ -223,7 +211,6 @@ LOOP:
 		case msg = <-mychannel:
 			srv.Send(msg)
 		case <-d.stopCh:
-			log.Print("StopCh received, closing client connections")
 			break LOOP
 		}
 	}

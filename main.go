@@ -3,8 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log"
 	"net"
 	"os"
+
+	_ "embed"
 
 	"github.com/docker/go-plugins-helpers/sdk"
 	"github.com/kubaraczkowski/docker_grpc_logdriver/internal/driver"
@@ -24,8 +27,13 @@ var (
 
 const socketAddress = "/run/docker/plugins/grpc.sock"
 
+//go:embed version.txt
+var version string
+
 func main() {
 	flag.Parse()
+
+	log.Printf("GRPC LogDriver version %s", version)
 
 	levelVal := os.Getenv("LOG_LEVEL")
 	if levelVal == "" {
@@ -55,7 +63,6 @@ func main() {
 	}
 	go driver.RunService(lis, d)
 
-	log.Printf("Hello world")
 	if err := h.ServeUnix(socketAddress, 0); err != nil {
 		panic(err)
 	}
