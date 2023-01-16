@@ -16,11 +16,11 @@ import (
 	protoio "github.com/gogo/protobuf/io"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
 	grpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/reflection"
 	status "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -58,6 +58,7 @@ func NewDriver() *driver {
 }
 
 func (d *driver) StartLogging(file string, logCtx logger.Info) error {
+	log.Printf("StarLogging container %s", logCtx.ContainerID)
 	d.mu.Lock()
 	if _, exists := d.logs[file]; exists {
 		d.mu.Unlock()
@@ -65,7 +66,6 @@ func (d *driver) StartLogging(file string, logCtx logger.Info) error {
 	}
 	d.mu.Unlock()
 
-	logrus.WithField("id", logCtx.ContainerID).WithField("file", file).WithField("logpath", logCtx.LogPath).Debugf("Start logging")
 	f, err := fifo.OpenFifo(context.Background(), file, syscall.O_RDONLY, 0700)
 	if err != nil {
 		return errors.Wrapf(err, "error opening logger fifo: %q", file)
@@ -89,15 +89,12 @@ func (d *driver) StartLogging(file string, logCtx logger.Info) error {
 }
 
 func (d *driver) StopLogging(file string) error {
-	logrus.WithField("file", file).Debugf("Stop logging")
+	log.Print("StopLogging")
 	d.mu.Lock()
 	lf, ok := d.logs[file]
 	if ok {
 		lf.stream.Close()
 		delete(d.logs, file)
-	}
-	if len(d.logs) == 0 {
-		close(d.stopCh)
 	}
 	d.mu.Unlock()
 	return nil
@@ -109,8 +106,11 @@ func readLog(lf *logPair) {
 	var buf logdriver.LogEntry
 	for {
 		if err := dec.ReadMsg(&buf); err != nil {
-			if err == io.EOF {
-				logrus.WithField("id", lf.info.ContainerID).WithError(err).Debug("shutting down log logger")
+			if err != nil {
+				if err == io.EOF {
+				} else {
+					log.Print(err.Error())
+				}
 				lf.stream.Close()
 				return
 			}
@@ -125,7 +125,10 @@ func consumeLog(lf *logPair) {
 
 	for {
 
-		buf := <-lf.msgCh
+		buf, ok := <-lf.msgCh
+		if !ok {
+			return
+		}
 
 		msg_proto := &LogMessage{
 			Service: lf.info.ContainerName,
@@ -144,7 +147,6 @@ func consumeLog(lf *logPair) {
 
 		select {
 		case lf.sendCh <- msg_proto:
-			logrus.WithField("id", lf.info.ContainerID).Debugf("Message sent")
 		default:
 			// logrus.WithField("id", lf.info.ContainerID).Debugf("Message skipped")
 		}
@@ -161,6 +163,8 @@ func RunService(lis net.Listener, d *driver) {
 	}
 
 	clientfanout = fanout{mu: sync.RWMutex{}, clientchannel: make(map[uuid.UUID]chan *LogMessage)}
+	defer close(d.stopCh)
+	defer close(d.recvCh)
 
 	var opts []grpc.ServerOption
 	grpcServer := grpc.NewServer(opts...)
@@ -168,29 +172,21 @@ func RunService(lis net.Listener, d *driver) {
 	reflection.Register(grpcServer)
 	go d.fanoutmessages()
 	grpcServer.Serve(lis)
+
 }
 
 func (d *driver) fanoutmessages() {
 	for {
-		msg := <-d.recvCh
+		msg, ok := <-d.recvCh
+		if !ok {
+			// channel closed
+			return
+		}
 		clientfanout.mu.RLock()
 
 		for _, ch := range clientfanout.clientchannel {
-			pcopy := &LogMessage{
-				Service: msg.GetService(),
-				Entry: &LogEntry{
-					Source:   msg.GetEntry().GetSource(),
-					TimeNano: msg.GetEntry().GetTimeNano(),
-					Line:     msg.GetEntry().GetLine(),
-					Partial:  msg.GetEntry().GetPartial(),
-					PartialLogMetadata: &PartialLogEntryMetadata{
-						Last:    msg.GetEntry().GetPartialLogMetadata().GetLast(),
-						Id:      msg.GetEntry().GetPartialLogMetadata().GetId(),
-						Ordinal: msg.GetEntry().GetPartialLogMetadata().GetOrdinal(),
-					},
-				},
-			}
-			ch <- pcopy
+			pcopy := proto.Clone(msg)
+			ch <- pcopy.(*LogMessage)
 		}
 		clientfanout.mu.RUnlock()
 	}
@@ -199,6 +195,7 @@ func (d *driver) fanoutmessages() {
 func (d *driver) GetLogs(options *LogOptions, srv IDockerLogDriver_GetLogsServer) error {
 	var msg *LogMessage
 	id := uuid.New()
+	log.Printf("New client: %v", id)
 
 	clientfanout.mu.Lock()
 	if _, ok := clientfanout.clientchannel[id]; ok {
