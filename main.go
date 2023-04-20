@@ -54,7 +54,10 @@ func main() {
 	log.Out = os.Stdout
 
 	h := sdk.NewHandler(`{"Implements": ["LoggingDriver"]}`)
-	d := driver.NewDriver()
+	d, err := driver.NewDriver()
+	if err != nil {
+		panic(err)
+	}
 	driver.Handlers(&h, d)
 
 	lis, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", *port))

@@ -7,6 +7,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 	"syscall"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/docker/docker/daemon/logger"
 	protoio "github.com/gogo/protobuf/io"
 	"github.com/google/uuid"
+	"github.com/natefinch/lumberjack"
 	"github.com/pkg/errors"
 	grpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -34,11 +37,12 @@ type driver struct {
 }
 
 type logPair struct {
-	stream io.ReadCloser
-	info   logger.Info
-	sendCh chan *LogMessage
-	stopCh chan struct{}
-	msgCh  chan logdriver.LogEntry
+	stream    io.ReadCloser
+	info      logger.Info
+	sendCh    chan *LogMessage
+	stopCh    chan struct{}
+	msgCh     chan logdriver.LogEntry
+	msgFileCh chan logdriver.LogEntry
 }
 
 type fanout struct {
@@ -48,13 +52,18 @@ type fanout struct {
 
 var clientfanout fanout
 
-func NewDriver() *driver {
+func NewDriver() (*driver, error) {
+	loc := os.Getenv("LOG_LOCATION")
+	err := SetLogFileLocation(loc)
+	if err != nil {
+		return nil, err
+	}
 	return &driver{
 		logs:   make(map[string]*logPair),
 		idx:    make(map[string]*logPair),
 		recvCh: make(chan *LogMessage),
 		stopCh: make(chan struct{}),
-	}
+	}, nil
 }
 
 func (d *driver) StartLogging(file string, logCtx logger.Info) error {
@@ -73,11 +82,12 @@ func (d *driver) StartLogging(file string, logCtx logger.Info) error {
 
 	d.mu.Lock()
 	lf := &logPair{
-		stream: f,
-		info:   logCtx,
-		sendCh: d.recvCh,
-		stopCh: d.stopCh,
-		msgCh:  make(chan logdriver.LogEntry),
+		stream:    f,
+		info:      logCtx,
+		sendCh:    d.recvCh,
+		stopCh:    d.stopCh,
+		msgCh:     make(chan logdriver.LogEntry),
+		msgFileCh: make(chan logdriver.LogEntry),
 	}
 	d.logs[file] = lf
 	d.idx[logCtx.ContainerID] = lf
@@ -85,6 +95,7 @@ func (d *driver) StartLogging(file string, logCtx logger.Info) error {
 
 	go readLog(lf)
 	go consumeLog(lf)
+	go writeToFile(lf)
 	return nil
 }
 
@@ -118,6 +129,7 @@ func readLog(lf *logPair) {
 			continue
 		}
 		lf.msgCh <- buf
+		lf.msgFileCh <- buf
 	}
 }
 
@@ -153,6 +165,37 @@ func consumeLog(lf *logPair) {
 
 		buf.Reset()
 	}
+}
+
+var logFileBaseDir = "/system"
+
+func SetLogFileLocation(loc string) error {
+	logFileBaseDir = loc
+	return os.MkdirAll(logFileBaseDir, 0750)
+}
+
+func writeToFile(lf *logPair) {
+	// setup a rotating logger based on the container name
+	name := lf.info.ContainerName
+	logger := &lumberjack.Logger{
+		Filename:   filepath.Join(logFileBaseDir, name),
+		MaxSize:    50, // megabytes
+		MaxBackups: 3,
+		MaxAge:     28,   //days
+		Compress:   true, // disabled by default
+	}
+	defer logger.Close()
+
+	var msg logdriver.LogEntry
+	var ok bool
+	for {
+		msg, ok = <-lf.msgFileCh
+		if !ok {
+			return
+		}
+		logger.Write(msg.Line)
+	}
+
 }
 
 func RunService(lis net.Listener, d *driver) {

@@ -15,6 +15,12 @@
 			"description": "Set log level to output for plugin logs",
 			"value": "info",
 			"settable": ["value"]
+		},
+		{
+			"name": "LOG_LOCATION",
+			"description": "Set log file location",
+			"value": "/tmp",
+			"settable": ["value"]
 		}
 	]
 }
