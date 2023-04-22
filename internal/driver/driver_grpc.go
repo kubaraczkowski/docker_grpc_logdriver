@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"os"
 	"path/filepath"
 	"sync"
 	"syscall"
@@ -53,11 +52,6 @@ type fanout struct {
 var clientfanout fanout
 
 func NewDriver() (*driver, error) {
-	loc := os.Getenv("LOG_LOCATION")
-	err := SetLogFileLocation(loc)
-	if err != nil {
-		return nil, err
-	}
 	return &driver{
 		logs:   make(map[string]*logPair),
 		idx:    make(map[string]*logPair),
@@ -167,18 +161,13 @@ func consumeLog(lf *logPair) {
 	}
 }
 
-var logFileBaseDir = "/system"
-
-func SetLogFileLocation(loc string) error {
-	logFileBaseDir = loc
-	return os.MkdirAll(logFileBaseDir, 0750)
-}
+var logFileBaseDir = "/log"
 
 func writeToFile(lf *logPair) {
 	// setup a rotating logger based on the container name
 	name := lf.info.ContainerName
 	logger := &lumberjack.Logger{
-		Filename:   filepath.Join(logFileBaseDir, name),
+		Filename:   filepath.Join(logFileBaseDir, fmt.Sprintf("%s.log", name)),
 		MaxSize:    50, // megabytes
 		MaxBackups: 3,
 		MaxAge:     28,   //days
@@ -194,6 +183,7 @@ func writeToFile(lf *logPair) {
 			return
 		}
 		logger.Write(msg.Line)
+		logger.Write([]byte("\n"))
 	}
 
 }
